@@ -29,6 +29,8 @@ Panel {
   property var jbl: ({ connected: false, features: {}, battery: {} })
   readonly property var features: Model.features(jbl)
   readonly property bool ready: Model.ready(jbl)
+  property var modeOpts: []
+  property var batteryRows: []
   property var lastLevel: null
   property string flashText: ""
   property bool customEq: false
@@ -78,6 +80,12 @@ Panel {
     if (msg.type !== "state") return
     var prev = jbl
     jbl = msg
+    // Repeater models get a new array only when the content changes; a fresh
+    // array on every state line would rebuild the chips/rows under the mouse.
+    var opts = Model.modeOptions(msg)
+    if (JSON.stringify(opts) !== JSON.stringify(modeOpts)) modeOpts = opts
+    var rows = Model.batteryRows(msg)
+    if (JSON.stringify(rows) !== JSON.stringify(batteryRows)) batteryRows = rows
     if (!msg.primary) return
     if (osdEnabled && prev.connected && msg.connected && prev.mode && msg.mode && prev.mode !== msg.mode)
       showOsd(Model.modeGlyph(msg), Model.MODE_LABELS[msg.mode] || msg.mode)
@@ -229,7 +237,7 @@ Panel {
 
             Repeater {
               id: batteryRepeater
-              model: Model.batteryRows(root.jbl)
+              model: root.batteryRows
 
               delegate: BatteryRow {
                 required property var modelData
@@ -256,7 +264,7 @@ Panel {
 
             ButtonGroup {
               anchors.horizontalCenter: parent.horizontalCenter
-              options: Model.modeOptions(root.jbl)
+              options: root.modeOpts
               value: root.jbl.mode || ""
               foreground: root.fg
               fontFamily: root.ff
