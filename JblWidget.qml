@@ -272,6 +272,18 @@ Panel {
               onChanged: function(v) { root.setMode(v) }
             }
 
+            Text {
+              width: parent.width
+              visible: text !== ""
+              textFormat: Text.PlainText
+              text: Model.modeHint(root.jbl)
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
+              color: Qt.darker(root.fg, 1.4)
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+            }
+
             Item {
               width: parent.width
               implicitHeight: Style.space(26)

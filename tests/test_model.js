@@ -109,6 +109,13 @@ test("low battery fires once on the way down", () => {
   assert.strictEqual(M.lowBatteryCrossed(30, 10, 0), false)
 })
 
+test("ANC hint when one bud is out", () => {
+  assert.ok(M.modeHint(waveBuds2).startsWith("Right bud is not connected"))
+  const both = Object.assign({}, waveBuds2, { battery: { left: { level: 50 }, right: { level: 60 } } })
+  assert.strictEqual(M.modeHint(both), "")
+  assert.strictEqual(M.modeHint({ connected: true, battery: { main: { level: 50 } }, features: { modes: ["off", "anc"] } }), "")
+})
+
 test("control notes", () => {
   assert.strictEqual(M.controlNote(waveBuds2), "")
   assert.ok(M.controlNote(Object.assign({}, waveBuds2, { control: "unavailable" })).includes("Battery still"))

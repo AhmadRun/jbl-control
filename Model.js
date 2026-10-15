@@ -123,6 +123,18 @@ function modeOptions(state) {
   return out
 }
 
+// Earbuds with one bud out (in the case) refuse ANC on JBL firmware. Returns
+// the hint to show under the mode buttons, or "".
+function modeHint(state) {
+  var b = (state && state.battery) || {}
+  var modes = features(state).modes || []
+  if (modes.indexOf("anc") < 0 || !b.hasOwnProperty("left") || !b.hasOwnProperty("right")) return ""
+  var left = b.left && b.left.level !== null && b.left.level !== undefined
+  var right = b.right && b.right.level !== null && b.right.level !== undefined
+  if (left === right) return ""
+  return (left ? "Right" : "Left") + " bud is not connected. Noise Cancelling needs both buds in your ears."
+}
+
 function modeGlyph(state) {
   return (state && MODE_GLYPHS[state.mode]) || MODE_GLYPHS.anc
 }
@@ -207,7 +219,7 @@ if (typeof module !== "undefined") {
     GLYPHS: GLYPHS, MODE_GLYPHS: MODE_GLYPHS, deviceGlyph: deviceGlyph,
     parseLine: parseLine, features: features, ready: ready, batteryRows: batteryRows,
     barLevel: barLevel, charging: charging, barText: barText, tooltip: tooltip,
-    modeOptions: modeOptions, modeGlyph: modeGlyph, cycleList: cycleList, cycleCommand: cycleCommand,
+    modeOptions: modeOptions, modeGlyph: modeGlyph, modeHint: modeHint, cycleList: cycleList, cycleCommand: cycleCommand,
     eqValue: eqValue, eqCommand: eqCommand, eqGains: eqGains, eqBandCommand: eqBandCommand,
     formatGain: formatGain, lowBatteryCrossed: lowBatteryCrossed, controlNote: controlNote,
     infoLine: infoLine
