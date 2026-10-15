@@ -58,6 +58,8 @@ class Lines:
                 data = self.sock.recv(65536)
             except socket.timeout:
                 return None
+            except OSError:
+                return None  # the bridge went away (restarted)
             if not data:
                 return None
             self.buf += data

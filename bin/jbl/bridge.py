@@ -13,7 +13,6 @@ The widget runs one without --daemon, so it lives exactly as long as the bar.
 jblctl starts a --daemon owner with a linger timeout when none is running.
 """
 import argparse
-import ctypes
 import fcntl
 import json
 import os
@@ -28,19 +27,26 @@ SOCK_PATH = os.path.join(RUNTIME, "jbl-control.sock")
 LOCK_PATH = os.path.join(RUNTIME, "jbl-control.lock")
 
 
+LOG_PATH = os.path.join(RUNTIME, "jbl-control.log")
+
+
 def log_to_stderr(verbose):
-    def log(*args):
-        if verbose:
-            print("jbl-bridge:", *args, file=sys.stderr, flush=True)
-    return log
-
-
-def die_with_parent():
+    """--verbose: everything (raw frames too) on stderr. Always: link events
+    in $XDG_RUNTIME_DIR/jbl-control.log, for when the widget's bridge misbehaves."""
     try:
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        libc.prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+        logfile = open(LOG_PATH, "a", buffering=1)
     except OSError:
-        pass
+        logfile = None
+    if logfile and not verbose:
+        sys.stderr = logfile  # tracebacks land in the log too
+
+    def log(*args):
+        line = " ".join(str(a) for a in args)
+        if verbose:
+            print("jbl-bridge:", line, file=sys.stderr, flush=True)
+        if logfile and not line.startswith(("tx ", "rx ")):
+            logfile.write("%s [%d] %s\n" % (time.strftime("%H:%M:%S"), os.getpid(), line))
+    return log
 
 
 def try_lock():
@@ -116,6 +122,7 @@ class Owner:
         self.names = {}
         self.selected = args.address.upper() if args.address else None
         self.clients = {}       # socket -> read buffer
+        self.widgets = []       # clients that are bar widgets (relays), oldest first
         self.pending = False
         self.last_line = None
         self.last_client = time.monotonic()
@@ -162,9 +169,12 @@ class Owner:
         self._schedule()
 
     def _on_gone(self, address):
+        from . import bluez_link
         s = self.sessions.pop(address, None)
         if s:
             s.stop()
+            if s.le_address:
+                bluez_link.release(s.le_address)
         self._schedule()
 
     def _find_le(self, address):
@@ -223,13 +233,29 @@ class Owner:
 
     def broadcast(self, line):
         if self.args.stdin:
+            # The widget that runs the owner is the primary one: with a bar on
+            # every monitor, only it shows the OSD and sends notifications.
             try:
-                sys.stdout.write(line)
+                sys.stdout.write(self._as_primary(line))
                 sys.stdout.flush()
             except BrokenPipeError:
                 self.quit()
+        primary = self.primary_client()
         for c in list(self.clients):
-            self._send(c, line)
+            self._send(c, self._as_primary(line) if c is primary else line)
+
+    @staticmethod
+    def _as_primary(line):
+        if line.startswith('{"') and '"type": "state"' in line:
+            return '{"primary": true, ' + line[1:]
+        return line
+
+    def primary_client(self):
+        """A daemon owner (started by jblctl) has no widget of its own; the
+        first widget that relays through it plays that part."""
+        if self.args.stdin:
+            return None
+        return next((c for c in self.widgets if c in self.clients), None)
 
     def _send(self, client, line):
         try:
@@ -278,8 +304,14 @@ class Owner:
         return True
 
     def _drop(self, c):
+        primary_before = self.primary_client()
         if self.clients.pop(c, None) is not None:
+            if c in self.widgets:
+                self.widgets.remove(c)
             self.last_client = time.monotonic()
+            successor = self.primary_client()
+            if c is primary_before and successor is not None:
+                self._send(successor, self._as_primary(self.state_line()))
             try:
                 c.close()
             except OSError:
@@ -302,6 +334,12 @@ class Owner:
     def command(self, line, client):
         from .commands import CommandError, parse
         if not line.strip():
+            return
+        if line.strip() == "role widget" and client is not None:
+            if client not in self.widgets:
+                self.widgets.append(client)
+            if client is self.primary_client():
+                self._send(client, self._as_primary(self.state_line()))
             return
         s = self.active()
         try:
@@ -344,8 +382,12 @@ class Owner:
         return True
 
     def quit(self, *_):
+        from . import bluez_link
         for s in self.sessions.values():
             s.stop()
+            # Hand the buds' LE side back instead of leaving bluetoothd holding it.
+            if s.le_address:
+                bluez_link.release(s.le_address)
         try:
             os.unlink(SOCK_PATH)
         except OSError:
@@ -366,8 +408,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     args.stdin = not args.daemon
     log = log_to_stderr(args.verbose)
-    if args.stdin:
-        die_with_parent()
+    # No PR_SET_PDEATHSIG: it fires when the spawning *thread* exits, and the
+    # shell starts processes from short-lived threads. stdin EOF is the signal.
 
     while True:
         lock = try_lock()
@@ -382,6 +424,7 @@ def main(argv=None):
             time.sleep(0.3)
             continue
         log("relay")
+        sock.sendall(b"role widget\n")
         if args.address:
             sock.sendall(("select %s\n" % args.address).encode())
         if relay(sock, args.stdin) == "stdin-closed":

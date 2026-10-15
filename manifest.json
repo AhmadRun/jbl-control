@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.ahmadrun.jbl-control",
+  "name": "JBL Control",
+  "version": "0.1.0",
+  "author": "Ahmad Elyan",
+  "license": "MIT",
+  "repository": "https://github.com/AhmadRun/jbl-control",
+  "description": "JBL earbuds and headphones in the Omarchy bar: left/right/case battery, noise cancelling / Ambient Aware / TalkThru, EQ presets and a 10-band custom EQ, VoiceAware, Find My Buds and the rest of the JBL Headphones app's settings, over the buds' own Bluetooth control channel.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "JblWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "JBL Control",
+    "description": "Battery, noise control, EQ and settings for JBL earbuds and headphones (Wave Buds 2, Tune, Live, Vibe and more).",
+    "category": "Devices",
+    "aliases": ["jbl", "headphones", "earbuds", "anc", "noise-cancelling", "ambient", "wave-buds", "harman"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "address": "",
+      "showPercent": true,
+      "cycleModes": ["anc", "ambient", "off"],
+      "osd": true,
+      "lowBattery": 15
+    },
+    "schema": [
+      {
+        "key": "address",
+        "type": "string",
+        "label": "Headphones address",
+        "defaultValue": "",
+        "description": "Bluetooth address (AA:BB:CC:DD:EE:FF) of the JBL device to control. Leave empty to use whichever JBL device is connected."
+      },
+      {
+        "key": "showPercent",
+        "type": "boolean",
+        "label": "Show battery in the bar",
+        "defaultValue": true,
+        "description": "Show the emptier bud's battery next to the icon."
+      },
+      {
+        "key": "cycleModes",
+        "type": "multiselect",
+        "label": "Modes to cycle",
+        "description": "Listening modes the scroll wheel and the cycleAnc IPC call step through. Leave empty for every mode the device has.",
+        "noSelectionText": "Every mode",
+        "placeholderText": "Search modes...",
+        "emptyText": "No modes",
+        "options": [
+          { "value": "anc", "label": "Noise Cancelling", "description": "ANC on" },
+          { "value": "ambient", "label": "Ambient Aware", "description": "Hear your surroundings" },
+          { "value": "talkthru", "label": "TalkThru", "description": "Lower the music and boost voices" },
+          { "value": "off", "label": "Off", "description": "No noise control" }
+        ]
+      },
+      {
+        "key": "osd",
+        "type": "boolean",
+        "label": "On-screen display on mode change",
+        "defaultValue": true,
+        "description": "Show the Omarchy OSD when the listening mode changes, from the bar, a keybinding or the buds' own touch control."
+      },
+      {
+        "key": "lowBattery",
+        "type": "integer",
+        "label": "Low battery warning (%)",
+        "min": 0,
+        "max": 50,
+        "step": 5,
+        "defaultValue": 15,
+        "description": "Send a notification when a bud drops to this level. 0 turns it off."
+      }
+    ]
+  }
+}

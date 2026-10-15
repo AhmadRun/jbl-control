@@ -1,4 +1,6 @@
 """Open the JBL control link: ATT straight to the buds' random LE address."""
+import time
+
 from . import att
 from . import protocol as p
 
@@ -37,6 +39,11 @@ class Link:
 
 
 def open_link(le_address, on_bytes, on_close):
+    """A raw ATT socket, after making sure bluetoothd has no object for the
+    address (see bluez_link) that would take the ATT bearer from us."""
+    from . import bluez_link
+    if bluez_link.release(le_address):
+        time.sleep(1.0)  # let the old connection drop before dialing again
     # A live advertiser answers within a second; a stale address never does,
     # and the sooner that is known the sooner the LE scan finds the real one.
     return Link(le_address, on_bytes, on_close, timeout=5.0)
