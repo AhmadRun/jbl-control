@@ -216,7 +216,6 @@ Panel {
               if (note) return note
               return Model.MODE_LABELS[root.jbl.mode] || ""
             }
-            detail: root.flashText
             iconOpacity: root.jbl.connected ? 1 : 0.5
             iconComponent: Component {
               Text {
@@ -227,6 +226,19 @@ Panel {
                 font.pixelSize: Style.font.display
               }
             }
+          }
+
+          // Feedback for a declined setting; wraps instead of eliding like
+          // the hero's one-line detail would.
+          Text {
+            width: parent.width
+            visible: root.flashText !== ""
+            textFormat: Text.PlainText
+            text: root.flashText
+            wrapMode: Text.WordWrap
+            color: Color.urgent
+            font.family: root.ff
+            font.pixelSize: Style.font.caption
           }
 
           // ---------- Battery ----------

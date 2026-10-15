@@ -324,7 +324,7 @@ class Session:
         if op == "mode":
             actual = p.decode(reply).get("mode")
             if actual and actual != args[0]:
-                return self.error("The buds stayed in %s. %s may need both buds in your ears."
+                return self.error("Still in %s: the buds declined %s (it needs both buds in)."
                                   % (MODE_LABELS.get(actual, actual), MODE_LABELS.get(args[0], args[0])))
         elif op == "low-latency":
             if p.sav_mode(reply["raw"]) != ("video" if args[0] else self.state.get("normalAudioMode", "audio")):
