@@ -61,6 +61,9 @@ class Encode(unittest.TestCase):
         self.assertEqual(p.standby_set(True), H("aa960500010102 00"))
         self.assertEqual(p.gestures_set([("double-tap-left", "play-pause")]), H("aa7703000308"))
         self.assertEqual(p.power_off(), H("aa9700"))
+        # Verified on a Wave Buds 2: three bytes, or the buds fill the last with f8.
+        self.assertEqual(p.voice_aware_set(2, 0), H("aa9803000200"))
+        self.assertEqual(p.decode_voice_aware(H("0202f8")), {"voiceAware": 2, "voiceAwareExtra": 0xf8})
 
     def test_factory_reset_is_blocked(self):
         with self.assertRaises(p.BlockedCommand):
@@ -123,9 +126,66 @@ class Decode(unittest.TestCase):
 
     def test_sav_only_known_blobs(self):
         frame = {"cmd": 0x80, "raw": p.SAV_FRAMES["video"], "payload": b"", "truncated": False}
-        self.assertEqual(p.decode(frame), {"lowLatency": True})
+        self.assertEqual(p.decode(frame), {"lowLatency": True, "audioMode": "video"})
         frame = {"cmd": 0x80, "raw": H("aa8009001122334455667788"), "payload": b"", "truncated": False}
         self.assertEqual(p.decode(frame), {})
+
+    def test_raw_frame_blocklist(self):
+        self.assertEqual(p.raw_frame(H("aa770101")), H("aa770101"))
+        with self.assertRaises(p.BlockedCommand):
+            p.raw_frame(H("aa9500"))
+        with self.assertRaises(ValueError):
+            p.raw_frame(H("bb0100"))
+
+
+def capture(name):
+    """rx frames of a fixture capture, decoded through a FrameReader."""
+    path = os.path.join(os.path.dirname(__file__), "fixtures", name)
+    reader = p.FrameReader()
+    frames = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("rx "):
+                # One line = one notification, each shorter than the MTU.
+                frames += reader.feed(H(line[3:]), last=True)
+    return frames
+
+
+class WaveBuds2Capture(unittest.TestCase):
+    """Frames recorded from a real JBL Wave Buds 2 (firmware 2.7.0)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.state = {}
+        for frame in capture("wave-buds-2.txt"):
+            # Only the EQ reply comes short (the buds' own doing, 112 of 116 bytes).
+            assert not frame["truncated"] or frame["cmd"] == p.CMD_EQ
+            fragment = p.decode(frame)
+            battery = fragment.pop("battery", None)
+            if battery:
+                cls.state.setdefault("battery", {}).update(battery)
+            cls.state.update(fragment)
+
+    def test_identity(self):
+        self.assertEqual(self.state["name"], "JBL Wave Buds 2")
+        self.assertEqual(self.state["firmware"], "2.7.0")
+        self.assertEqual(self.state["serial"], "DO0032-JO0230678")
+
+    def test_mode_and_battery(self):
+        self.assertEqual(self.state["mode"], "ambient")
+        self.assertEqual(self.state["battery"]["left"], {"level": 100, "charging": False})
+        self.assertIsNone(self.state["battery"]["right"])  # in the case: 0xff
+        self.assertEqual(self.state["battery"]["case"]["level"], 100)
+
+    def test_settings(self):
+        self.assertEqual(self.state["eq"], {"preset": "off", "gains": [0.0] * 10})
+        self.assertTrue(self.state["voicePrompts"])
+        self.assertEqual(self.state["autoOff"], {"enabled": False, "minutes": 0})
+        self.assertFalse(self.state["safeSound"])
+        self.assertNotIn("spatial", self.state)  # answers 00 00: no spatial sound
+        self.assertEqual(self.state["audioMode"], "audio")
+        self.assertFalse(self.state["lowLatency"])
+        self.assertEqual(self.state["finding"], {"left": False, "right": False})
 
 
 class FastPair(unittest.TestCase):

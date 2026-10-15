@@ -20,6 +20,8 @@ NOTIFY_UUID = uuid.UUID("65786365-6c70-6f69-6e74-2e636f6d0001")
 WRITE_UUID = uuid.UUID("65786365-6c70-6f69-6e74-2e636f6d0002")
 FAST_PAIR_STREAM_UUID = "df21fe2c-2515-4fdb-8886-f12c4d67927c"
 JBL_VENDOR_ID = 0x0ECB
+# 16-bit service data UUID in the buds' "<name>-LE" advertisement.
+HARMAN_SERVICE = "0000fddf-0000-1000-8000-00805f9b34fb"
 
 HEADER = 0xAA
 
@@ -72,6 +74,7 @@ INFO_PROBE_FIDS = (FID_NAME, FID_FIRMWARE, FID_TWS, FID_AUTO_OFF, FID_SPATIAL,
 SPATIAL_SCENES = {1: "movie", 2: "music", 3: "game"}
 
 EQ_BAND_FREQS = (32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+EQ_OFF = 0
 EQ_CUSTOM = 230
 EQ_CURRENT = 0xFF
 # category id -> (label, gains in dB for EQ_BAND_FREQS), from the JBL app.
@@ -206,8 +209,10 @@ def voice_aware_get():
     return encode(CMD_VOICE_AWARE, b"\x01")
 
 
-def voice_aware_set(level):
-    return encode(CMD_VOICE_AWARE, bytes([0x00, max(0, min(255, int(level)))]))
+def voice_aware_set(level, extra=0):
+    """VoiceAware takes <level> <extra>. With the second byte left out, a Wave
+    Buds 2 fills it with 0xf8, so the value it reported is always sent back."""
+    return encode(CMD_VOICE_AWARE, bytes([0x00, max(0, min(255, int(level))), int(extra) & 0xFF]))
 
 
 def find_get():
@@ -244,6 +249,16 @@ def sav_set(mode):
     return SAV_FRAMES[mode]
 
 
+def raw_frame(data):
+    """A hand-written frame (jblctl raw / probing), still subject to the blocklist."""
+    data = bytes(data)
+    if len(data) < 3 or data[0] != HEADER:
+        raise ValueError("a frame starts with AA and has at least 3 bytes")
+    if data[1] in BLOCKED_COMMANDS:
+        raise BlockedCommand("command 0x%02x is blocked" % data[1])
+    return data
+
+
 def power_off():
     return encode(CMD_POWER_OFF)
 
@@ -272,7 +287,15 @@ class FrameReader:
             return 4 + struct.unpack_from("<H", buf, 2)[0]
         return 3 + buf[2]
 
-    def feed(self, data):
+    def feed(self, data, last=False):
+        """`last`: the notification was shorter than the MTU allows, so a frame
+        still incomplete after it will not be continued; surface it now."""
+        frames = self._feed(data)
+        if last:
+            frames += self.flush()
+        return frames
+
+    def _feed(self, data):
         frames = []
         data = bytes(data)
         if self.buf and data[:1] == bytes([HEADER]):
@@ -356,9 +379,9 @@ def decode_info(payload):
     if v and len(v) >= 3:
         state["autoOff"] = {"enabled": bool(v[0]), "minutes": struct.unpack_from("<H", v, 1)[0]}
     v = tlv.get(FID_SPATIAL)
-    if v and len(v) >= 1:
-        state["spatial"] = {"enabled": bool(v[0]),
-                            "scene": SPATIAL_SCENES.get(v[1] if len(v) > 1 else 0, "music")}
+    if v and len(v) >= 2 and v[1] in SPATIAL_SCENES:
+        # Scenes are 1..3. A device without spatial sound still answers, with 00 00.
+        state["spatial"] = {"enabled": bool(v[0]), "scene": SPATIAL_SCENES[v[1]]}
     v = tlv.get(FID_SAFE_SOUND)
     if v and len(v) >= 1 and v[0] <= 1:
         state["safeSound"] = bool(v[0])
@@ -400,11 +423,19 @@ def decode_eq(payload):
     gains = []
     i = 16
     for _ in range(count):
-        if i + 10 > len(payload):
+        # A Wave Buds 2 cuts this reply 4 bytes short; the gains still all fit.
+        if i + 5 > len(payload):
             break
         gains.append(round(struct.unpack_from("<f", payload, i + 1)[0], 1))
         i += 10
-    preset = category if category in EQ_PRESETS else ("custom" if category == EQ_CUSTOM else category)
+    if category == EQ_OFF:
+        # A Wave Buds 2 with EQ off answers category 0 and no bands.
+        preset = "off"
+        gains = gains or [0.0] * len(EQ_BAND_FREQS)
+    elif category in EQ_PRESETS:
+        preset = category
+    else:
+        preset = "custom"
     return {"eq": {"preset": preset, "gains": gains}}
 
 
@@ -415,9 +446,12 @@ def decode_voice_prompt(payload):
 
 
 def decode_voice_aware(payload):
-    # Reply layout seen in the app source: <dir> <level>.
+    # <dir 02> <level> <extra>, e.g. 02 02 00 on a Wave Buds 2.
     if len(payload) >= 2 and payload[0] in (0x00, 0x02):
-        return {"voiceAware": payload[1]}
+        out = {"voiceAware": payload[1]}
+        if len(payload) >= 3:
+            out["voiceAwareExtra"] = payload[2]
+        return out
     return {}
 
 
@@ -439,8 +473,10 @@ def decode_name(payload):
 
 
 def sav_mode(raw):
+    """Which known codec blob a 0x80 frame carries. Byte 3 is the direction
+    (00 set, 02 return), so it is left out of the comparison."""
     for mode, frame in SAV_FRAMES.items():
-        if raw[:len(frame)] == frame:
+        if len(raw) >= len(frame) and raw[:3] == frame[:3] and raw[4:len(frame)] == frame[4:]:
             return mode
     return None
 
@@ -463,7 +499,7 @@ def decode(frame):
         return decode_mode(payload)
     if cmd == CMD_INFO:
         return decode_info(payload)[0]
-    if cmd == CMD_EQ and not frame["truncated"]:
+    if cmd == CMD_EQ:
         return decode_eq(payload)
     if cmd == CMD_VOICE_PROMPT:
         return decode_voice_prompt(payload)
@@ -475,11 +511,11 @@ def decode(frame):
         return decode_serial(payload)
     if cmd == CMD_NAME:
         return decode_name(payload)
-    if cmd == CMD_GESTURE:
-        return decode_gestures(payload)
+    # 0x77 (touch controls) is not decoded into state: the pair layout below is
+    # the Vibe Buds 2's, and a Wave Buds 2 answers its GET with something else.
     if cmd == CMD_SAV:
         mode = sav_mode(frame["raw"])
-        return {"lowLatency": mode == "video"} if mode else {}
+        return {"lowLatency": mode == "video", "audioMode": mode} if mode else {}
     return {}
 
 

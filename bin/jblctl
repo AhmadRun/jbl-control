@@ -1,0 +1,161 @@
+#!/usr/bin/python3 -I
+"""jblctl — control JBL earbuds/headphones from a terminal or a keybinding.
+
+    jblctl                      show status
+    jblctl status [--json]
+    jblctl mode anc|ambient|talkthru|off|cycle [list]
+    jblctl eq preset bass       (jazz, vocal, bass, club, studio, extreme-bass)
+    jblctl find left|right|both|stop
+    jblctl help                 every command
+
+Talks to the jbl-bridge the bar widget runs; starts a short-lived one when
+the widget is not running.
+"""
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+
+from jbl import bridge  # noqa: E402
+from jbl import commands  # noqa: E402
+from jbl import protocol as p  # noqa: E402
+
+
+def connect():
+    sock = bridge.try_connect()
+    if sock:
+        return sock, False
+    subprocess.Popen([os.path.join(HERE, "jbl-bridge"), "--daemon", "--linger", "120"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        sock = bridge.try_connect()
+        if sock:
+            return sock, True
+    sys.exit("jblctl: could not start jbl-bridge")
+
+
+class Lines:
+    def __init__(self, sock):
+        self.sock = sock
+        self.buf = b""
+
+    def next(self, timeout):
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self.buf:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            self.sock.settimeout(left)
+            try:
+                data = self.sock.recv(65536)
+            except socket.timeout:
+                return None
+            if not data:
+                return None
+            self.buf += data
+        line, self.buf = self.buf.split(b"\n", 1)
+        return json.loads(line)
+
+
+def pct(b):
+    if not b:
+        return "—"
+    return "%d%%%s" % (b["level"], " ⚡" if b.get("charging") else "")
+
+
+def describe(s):
+    if not s.get("connected"):
+        return "No JBL device connected."
+    out = ["%s  (%s)  controls: %s" % (s.get("name", "JBL"), s.get("address"), s.get("control"))]
+    bat = s.get("battery") or {}
+    if "main" in bat:
+        out.append("Battery   %s" % pct(bat["main"]))
+    elif bat:
+        out.append("Battery   L %s   R %s   case %s" % (pct(bat.get("left")), pct(bat.get("right")),
+                                                      pct(bat.get("case"))))
+    elif s.get("bluezBattery") is not None:
+        out.append("Battery   %d%%" % s["bluezBattery"])
+    f = s.get("features") or {}
+    if f.get("modes"):
+        out.append("Mode      %s   (%s)" % (s.get("mode", "?"), ", ".join(f["modes"])))
+    if f.get("ancLevel"):
+        out.append("ANC level %s" % s.get("ancLevel"))
+    if f.get("eq") and s.get("eq"):
+        preset = s["eq"].get("preset")
+        name = p.EQ_PRESETS[preset][0] if preset in p.EQ_PRESETS else str(preset).title()
+        out.append("EQ        %s  [%s]" % (name, " ".join("%+g" % g for g in s["eq"].get("gains", []))))
+    for key, label in (("voicePrompts", "Prompts"), ("safeSound", "SafeSound"), ("lowLatency", "Low lat.")):
+        if f.get(key) and key in s:
+            out.append("%-9s %s" % (label, "on" if s[key] else "off"))
+    if f.get("voiceAware") and "voiceAware" in s:
+        out.append("VoiceAware %s" % s["voiceAware"])
+    if f.get("spatial") and s.get("spatial"):
+        out.append("Spatial   %s (%s)" % ("on" if s["spatial"]["enabled"] else "off", s["spatial"]["scene"]))
+    if f.get("autoOff") and s.get("autoOff"):
+        a = s["autoOff"]
+        out.append("Auto-off  %s" % ("%d min" % a["minutes"] if a["enabled"] else "off"))
+    if s.get("firmware"):
+        out.append("Firmware  %s" % s["firmware"])
+    if len(s.get("devices") or []) > 1:
+        out.append("Devices   " + ", ".join("%s %s" % (d["name"], d["address"]) for d in s["devices"]))
+    return "\n".join(out)
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        print()
+        print(commands.__doc__.strip())
+        return 0
+    as_json = "--json" in argv
+    argv = [a for a in argv if a != "--json"]
+    if not argv:
+        argv = ["status"]
+    sock, fresh = connect()
+    lines = Lines(sock)
+    state = lines.next(3) or {}
+    if fresh:
+        # A brand-new bridge needs a moment to open the links and read the device.
+        started = time.monotonic()
+        deadline = started + 25
+        while state.get("control") not in ("ready", "unavailable") and time.monotonic() < deadline:
+            if state.get("connected") is False and time.monotonic() - started > 4:
+                break  # BlueZ has no JBL device connected
+            state = lines.next(deadline - time.monotonic()) or state
+    if argv[0] == "status":
+        print(json.dumps(state, indent=1, sort_keys=True) if as_json else describe(state))
+        return 0 if state.get("connected") else 1
+    sock.sendall((" ".join(argv) + "\n").encode())
+    # The bridge answers "done" once the buds have taken (or declined) it.
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        msg = lines.next(deadline - time.monotonic())
+        if msg is None:
+            print("jblctl: no answer from the buds", file=sys.stderr)
+            return 1
+        if msg.get("type") == "state":
+            state = msg
+        elif msg.get("type") == "error" or (msg.get("type") == "done" and msg.get("error")):
+            print("jblctl: %s" % (msg.get("message") or msg.get("error")), file=sys.stderr)
+            return 1
+        elif msg.get("type") == "done":
+            break
+    # A state line may trail the "done"; take it if it is already there.
+    trailing = lines.next(0.3)
+    if trailing and trailing.get("type") == "state":
+        state = trailing
+    if as_json:
+        print(json.dumps(state, indent=1, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

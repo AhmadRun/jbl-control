@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Run a bridge in the foreground with raw frame logging and feed it commands,
+# one per argument, a few seconds apart. Stops any running bridge first, since
+# the buds accept only one control link.
+#
+#   tools/jbl-probe "raw aa770101" "eq preset bass" "raw aaa20201ff" "eq off"
+#
+# Any bridge command works (see `jblctl help`); `raw <hex>` sends a frame as-is
+# (factory reset stays blocked). Output: tx/rx lines on stderr.
+set -u
+here="$(cd "$(dirname "$0")/.." && pwd)"
+gap="${JBL_PROBE_GAP:-3}"
+settle="${JBL_PROBE_SETTLE:-14}"
+
+pkill -f '[j]bl-bridge' && sleep 1
+
+{
+  sleep "$settle"
+  for cmd in "$@"; do
+    echo "$cmd"
+    sleep "$gap"
+  done
+} | "$here/bin/jbl-bridge" --verbose 2>&1 >/dev/null | grep -E '^jbl-bridge: (tx|rx|control|fast)'
